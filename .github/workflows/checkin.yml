@@ -112,6 +112,8 @@ jobs:
         PROXY: ${{secrets.PROXY}}
         STORATE_STATES_GITHUB: ${{ secrets.STORATE_STATES_GITHUB }}
         STORATE_STATES_LINUXDO: ${{ secrets.STORATE_STATES_LINUXDO }}
+        # 登录缓存失效时允许使用 Linux.do 账号自动重新登录并重建缓存
+        RUN_LINUXDO_LOGIN_MANUAL: 'true'
         DEBUG: ${{ github.event_name == 'workflow_dispatch' && inputs.debug || vars.DEBUG || 'false' }}
         DINGDING_WEBHOOK: ${{ secrets.DINGDING_WEBHOOK }}
         EMAIL_USER: ${{ secrets.EMAIL_USER }}
