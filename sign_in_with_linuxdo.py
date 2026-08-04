@@ -161,24 +161,43 @@ class LinuxDoSignIn:
 
                             await page.goto("https://linux.do/login", wait_until="domcontentloaded")
 
-                            # 检查是否在 Cloudflare 验证页面
+                            # Cloudflare 页面文案可能是 Just a moment、Checking your browser，
+                            # 或新版的 Enable JavaScript and cookies to continue。
                             page_title = await page.title()
                             page_content = await page.content()
+                            cloudflare_challenge = any(
+                                marker.lower() in f"{page_title}\n{page_content}".lower()
+                                for marker in (
+                                    "Just a moment",
+                                    "Checking your browser",
+                                    "Enable JavaScript and cookies to continue",
+                                    "cf-chl-",
+                                    "__cf_chl_",
+                                )
+                            )
 
-                            if "Just a moment" in page_title or "Checking your browser" in page_content:
+                            if cloudflare_challenge:
                                 print(f"ℹ️ {self.account_name}: Cloudflare challenge detected, auto-solving...")
                                 try:
                                     await solver.solve_captcha(
                                         captcha_container=page, captcha_type=CaptchaType.CLOUDFLARE_INTERSTITIAL
                                     )
                                     print(f"✅ {self.account_name}: Cloudflare challenge auto-solved")
-                                    await page.wait_for_timeout(10000)
+                                    await page.wait_for_timeout(12000)
                                 except Exception as solve_err:
                                     print(f"⚠️ {self.account_name}: Auto-solve failed: {solve_err}")
 
-                            await page.fill("#login-account-name", self.username)
+                            # 等待验证完成后再定位登录表单，避免在挑战页直接超时。
+                            await page.wait_for_selector(
+                                "#login-account-name, input[name='login'], input[name='username'], input[type='email']",
+                                timeout=60000,
+                            )
+
+                            username_selector = "#login-account-name, input[name='login'], input[name='username'], input[type='email']"
+                            password_selector = "#login-account-password, input[name='password'], input[type='password']"
+                            await page.fill(username_selector, self.username)
                             await page.wait_for_timeout(2000)
-                            await page.fill("#login-account-password", self.password)
+                            await page.fill(password_selector, self.password)
                             await page.wait_for_timeout(2000)
                             await page.click("#login-button")
                             await page.wait_for_timeout(10000)
