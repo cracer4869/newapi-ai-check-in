@@ -369,6 +369,7 @@ class AppConfig:
         cls,
         providers_env: str = "PROVIDERS",
         accounts_env: str = "ACCOUNTS",
+        accounts_extra_env: str = "ACCOUNTS_EXTRA",
         linux_do_accounts_env: str = "ACCOUNTS_LINUX_DO",
         github_accounts_env: str = "ACCOUNTS_GITHUB",
         proxy_env: str = "PROXY",
@@ -389,8 +390,13 @@ class AppConfig:
         linux_do_accounts = cls._load_oauth_accounts(linux_do_accounts_env, "Linux.do")
         github_accounts = cls._load_oauth_accounts(github_accounts_env, "GitHub")
 
-        # 加载账号配置（传入全局 OAuth 账号用于解析 bool 类型配置）
-        accounts = cls._load_accounts(accounts_env, linux_do_accounts, github_accounts)
+        # 合并主账号 Secret 与可选的追加账号 Secret，避免更新追加账号时覆盖原配置。
+        accounts = cls._load_accounts(
+            accounts_env,
+            linux_do_accounts,
+            github_accounts,
+            extra_accounts_env=accounts_extra_env,
+        )
 
         # 自动为自定义 provider 添加账号（如果 accounts 中没有对应的 provider）
         accounts = cls._auto_add_accounts_for_custom_providers(providers, accounts, linux_do_accounts, github_accounts)
@@ -996,6 +1002,7 @@ class AppConfig:
         accounts_env: str,
         global_linux_do_accounts: List["OAuthAccountConfig"],
         global_github_accounts: List["OAuthAccountConfig"],
+        extra_accounts_env: str | None = None,
     ) -> List["AccountConfig"]:
         """从环境变量加载多账号配置
 
@@ -1010,13 +1017,22 @@ class AppConfig:
         """
         # 从环境变量获取账号配置
         accounts_str = os.getenv(accounts_env)
+        extra_accounts_str = os.getenv(extra_accounts_env) if extra_accounts_env else None
 
-        if not accounts_str:
+        if not accounts_str and not extra_accounts_str:
             print(f"⚠️ {accounts_env} environment variable not found")
             return []
 
         try:
-            accounts_data = json.loads(accounts_str)
+            accounts_data = []
+            for env_name, raw_value in ((accounts_env, accounts_str), (extra_accounts_env, extra_accounts_str)):
+                if not raw_value:
+                    continue
+                parsed = json.loads(raw_value)
+                if not isinstance(parsed, list):
+                    print(f"❌ {env_name} must use array format []")
+                    continue
+                accounts_data.extend(parsed)
 
             # 检查是否为数组格式
             if not isinstance(accounts_data, list):

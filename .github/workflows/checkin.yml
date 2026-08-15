@@ -106,6 +106,7 @@ jobs:
     - name: 执行签到
       env:
         ACCOUNTS: ${{ inputs.accounts || secrets.ACCOUNTS }}
+        ACCOUNTS_EXTRA: ${{ secrets.ACCOUNTS_EXTRA }}
         ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
         ACCOUNTS_GITHUB: ${{ secrets.ACCOUNTS_GITHUB }}
         PROVIDERS: ${{ inputs.providers || secrets.PROVIDERS }}
