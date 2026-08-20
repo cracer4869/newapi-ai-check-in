@@ -201,7 +201,8 @@ async def save_page_content_to_file(
 async def aliyun_captcha_check(page, account_name: str) -> bool:
     """阿里云验证码检查和处理
 
-    检查页面是否有阿里云验证码（通过 traceid 检测），如果有则尝试自动滑动验证
+    按页面特征检测阿里云 WAF 验证页（新版 Captcha 2.0 的 #captcha-element、旧版
+    #nocaptcha、挑战页的 aliyun_waf_* meta，以及 #traceid 容器），命中则尝试自动滑动验证
 
     Args:
         page: Camoufox/Playwright 页面对象
@@ -210,31 +211,46 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
     Returns:
         bool: 验证码处理是否成功（无验证码或验证通过返回 True，验证失败返回 False）
     """
-    # 检查是否有 traceid (阿里云验证码页面)
+    # 检查是否命中阿里云验证码页面。
+    # 旧逻辑只认 #traceid 里的 "TraceID: xxx" 文本，但 WAF 后台可以关掉 show_trace_id
+    # （agentrouter 就关了），此时元素在、里面却只有时间没有 TraceID，验证码页会被
+    # 当成正常页面直接放过。改为按页面特征判断。
     try:
-        traceid = await page.evaluate(
+        captcha_hit = await page.evaluate(
             """() => {
             const traceElement = document.getElementById('traceid');
             if (traceElement) {
-                const text = traceElement.innerText || traceElement.textContent;
+                const text = traceElement.innerText || traceElement.textContent || '';
                 const match = text.match(/TraceID:\\s*([a-f0-9]+)/i);
-                return match ? match[1] : null;
+                if (match) return 'traceid:' + match[1];
             }
+            // 新版 Captcha 2.0 渲染在 #captcha-element，旧版 nocaptcha 用 #nocaptcha
+            if (document.getElementById('captcha-element')) return 'captcha-element';
+            if (document.getElementById('nocaptcha')) return 'nocaptcha';
+            // WAF 挑战页会插入这两个 meta
+            if (document.querySelector('meta[name="aliyun_waf_aa"], meta[name="aliyun_waf_bb"]')) return 'waf-meta';
+            // show_trace_id 关闭时只剩这个空容器
+            if (traceElement) return 'traceid-empty';
             return null;
         }"""
         )
 
-        if traceid:
-            print(f"⚠️ {account_name}: Aliyun captcha detected, traceid: {traceid}")
+        if captcha_hit:
+            print(f"⚠️ {account_name}: Aliyun captcha detected ({captcha_hit})")
             try:
-                await page.wait_for_selector("#nocaptcha", timeout=60000)
+                # 新旧两版都沿用 nc_scale / btn_slide 类名，只是父容器不同
+                # （新版 #captcha-element，旧版 #nocaptcha），所以不限定父级
+                await page.wait_for_selector(".nc_scale, #nocaptcha", timeout=60000)
 
-                slider_element = await page.query_selector("#nocaptcha .nc_scale")
+                slider = None
+                handle = None
+
+                slider_element = await page.query_selector(".nc_scale")
                 if slider_element:
                     slider = await slider_element.bounding_box()
                     print(f"ℹ️ {account_name}: Slider bounding box: {slider}")
 
-                slider_handle = await page.query_selector("#nocaptcha .btn_slide")
+                slider_handle = await page.query_selector(".btn_slide")
                 if slider_handle:
                     handle = await slider_handle.bounding_box()
                     print(f"ℹ️ {account_name}: Slider handle bounding box: {handle}")
@@ -242,16 +258,18 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
                 if slider and handle:
                     await take_screenshot(page, "aliyun_captcha_slider_start", account_name)
 
-                    await page.mouse.move(
-                        handle.get("x") + handle.get("width") / 2,
-                        handle.get("y") + handle.get("height") / 2,
-                    )
+                    start_x = handle.get("x") + handle.get("width") / 2
+                    start_y = handle.get("y") + handle.get("height") / 2
+                    target_x = handle.get("x") + slider.get("width")
+
+                    await page.mouse.move(start_x, start_y)
                     await page.mouse.down()
-                    await page.mouse.move(
-                        handle.get("x") + slider.get("width"),
-                        handle.get("y") + handle.get("height") / 2,
-                        steps=2,
-                    )
+                    # 分三段拖动、步数拉大，尽量避免被判成机器直线拖拽
+                    await page.mouse.move(start_x + (target_x - start_x) * 0.6, start_y + 2, steps=18)
+                    await page.wait_for_timeout(120)
+                    await page.mouse.move(start_x + (target_x - start_x) * 0.9, start_y - 1, steps=10)
+                    await page.wait_for_timeout(80)
+                    await page.mouse.move(target_x, start_y, steps=6)
                     await page.mouse.up()
                     await take_screenshot(page, "aliyun_captcha_slider_completed", account_name)
 
@@ -269,10 +287,10 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
                 await take_screenshot(page, "aliyun_captcha_error", account_name)
                 return False
         else:
-            print(f"ℹ️ {account_name}: No traceid found")
-            await take_screenshot(page, "aliyun_captcha_traceid_found", account_name)
+            print(f"ℹ️ {account_name}: No aliyun captcha detected")
+            await take_screenshot(page, "aliyun_captcha_not_found", account_name)
             return True
     except Exception as e:
-        print(f"❌ {account_name}: Error occurred while getting traceid, {e}")
+        print(f"❌ {account_name}: Error occurred while detecting aliyun captcha, {e}")
         await take_screenshot(page, "aliyun_captcha_error", account_name)
         return False
