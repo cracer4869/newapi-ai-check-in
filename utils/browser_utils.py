@@ -279,7 +279,9 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
                 # 不是旧版 nocaptcha 的 .nc_scale/.btn_slide 类名，两套都试。
                 # 仍然逐 frame 找，以防某些站点用 popup 模式渲染进 iframe；
                 # bounding_box 由 Playwright 换算成主页面坐标，鼠标操作不用改。
-                track_selectors = ("#aliyunCaptcha-sliding-wrapper", "#aliyunCaptcha-sliding-body", ".nc_scale")
+                # sliding-body 是可见滑轨（SDK 里 slideStyle.width 就是它，约 300px），
+                # sliding-wrapper 是外层容器、宽一倍多，拿它算终点会冲过滑轨末端
+                track_selectors = ("#aliyunCaptcha-sliding-body", "#aliyunCaptcha-sliding-wrapper", ".nc_scale")
                 handle_selectors = ("#aliyunCaptcha-sliding-slider", ".btn_slide")
 
                 slider = None
@@ -325,21 +327,22 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
 
                     start_x = handle.get("x") + handle.get("width") / 2
                     start_y = handle.get("y") + handle.get("height") / 2
-                    target_x = handle.get("x") + slider.get("width")
+                    # 终点取滑轨右端减半个手柄宽。上一版用 handle.x + track.width，
+                    # 在 wrapper 上算出来会冲过可见滑轨末端几百像素，必然判失败
+                    target_x = slider.get("x") + slider.get("width") - handle.get("width") / 2
+
+                    print(f"ℹ️ {account_name}: Dragging slider {start_x:.0f} -> {target_x:.0f}")
 
                     await page.mouse.move(start_x, start_y)
                     await page.mouse.down()
-                    # 分三段拖动、步数拉大，尽量避免被判成机器直线拖拽
-                    await page.mouse.move(start_x + (target_x - start_x) * 0.6, start_y + 2, steps=18)
-                    await page.wait_for_timeout(120)
-                    await page.mouse.move(start_x + (target_x - start_x) * 0.9, start_y - 1, steps=10)
-                    await page.wait_for_timeout(80)
-                    await page.mouse.move(target_x, start_y, steps=6)
+                    # Camoufox 的 humanize 已经在插值鼠标轨迹，steps 再拉大会让一次拖动
+                    # 耗时几十秒（上一版实测 36 秒），反而被判超时，所以保持小步数
+                    await page.mouse.move(target_x, start_y, steps=3)
                     await page.mouse.up()
                     await take_screenshot(page, "aliyun_captcha_slider_completed", account_name)
 
-                    # Wait for page to be fully loaded
-                    await page.wait_for_timeout(20000)
+                    # 等验证结果回来并跳转
+                    await page.wait_for_timeout(12000)
 
                     await take_screenshot(page, "aliyun_captcha_slider_result", account_name)
                     return True
