@@ -107,6 +107,8 @@ jobs:
       env:
         ACCOUNTS: ${{ inputs.accounts || secrets.ACCOUNTS }}
         ACCOUNTS_EXTRA: ${{ secrets.ACCOUNTS_EXTRA }}
+        # 追加账号可拆到多个 Secret，config.py 会收集所有 ACCOUNTS_EXTRA 前缀的环境变量
+        ACCOUNTS_EXTRA2: ${{ secrets.ACCOUNTS_EXTRA2 }}
         ACCOUNTS_LINUX_DO: ${{ secrets.ACCOUNTS_LINUX_DO }}
         ACCOUNTS_GITHUB: ${{ secrets.ACCOUNTS_GITHUB }}
         PROVIDERS: ${{ inputs.providers || secrets.PROVIDERS }}

@@ -1017,21 +1017,30 @@ class AppConfig:
         """
         # 从环境变量获取账号配置
         accounts_str = os.getenv(accounts_env)
-        extra_accounts_str = os.getenv(extra_accounts_env) if extra_accounts_env else None
 
-        if not accounts_str and not extra_accounts_str:
+        # 追加账号支持拆分到多个 Secret：凡以 extra_accounts_env 为前缀的环境变量都会被收集，
+        # 例如 ACCOUNTS_EXTRA、ACCOUNTS_EXTRA2。这样新增站点时不必重写已有 Secret
+        # （Secret 写入后无法读回，覆盖会丢掉里面的账号）。按名称排序保证加载顺序稳定。
+        extra_sources: List[tuple[str, str | None]] = []
+        if extra_accounts_env:
+            extra_sources = [
+                (name, os.getenv(name)) for name in sorted(os.environ) if name.startswith(extra_accounts_env)
+            ]
+
+        if not accounts_str and not any(value for _, value in extra_sources):
             print(f"⚠️ {accounts_env} environment variable not found")
             return []
 
         try:
             accounts_data = []
-            for env_name, raw_value in ((accounts_env, accounts_str), (extra_accounts_env, extra_accounts_str)):
+            for env_name, raw_value in [(accounts_env, accounts_str), *extra_sources]:
                 if not raw_value:
                     continue
                 parsed = json.loads(raw_value)
                 if not isinstance(parsed, list):
                     print(f"❌ {env_name} must use array format []")
                     continue
+                print(f"ℹ️ Loaded {len(parsed)} account(s) from {env_name}")
                 accounts_data.extend(parsed)
 
             # 检查是否为数组格式
