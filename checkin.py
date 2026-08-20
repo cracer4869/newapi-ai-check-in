@@ -104,10 +104,43 @@ class CheckIn:
 
                     print(f"ℹ️ {self.account_name}: Got {len(waf_cookies)} WAF cookies after step 1")
 
+                    # step 2: 有些站点（如 agentrouter）登录页不触发 WAF 挑战，只下发 acw_tc，
+                    # 但受保护的接口要求 acw_sc__v2 —— 这个值必须在页面里执行 JS 才能算出来，
+                    # 纯 HTTP 请求拿不到。这里再用浏览器访问一次受保护接口，让挑战在浏览器内
+                    # 完成后重新收集 cookie。
+                    if "acw_sc__v2" not in waf_cookies:
+                        protected_url = f"{self.provider_config.origin}{self.provider_config.user_info_path}"
+                        print(f"ℹ️ {self.account_name}: acw_sc__v2 missing, visiting protected endpoint to trigger WAF challenge")
+                        try:
+                            await page.goto(protected_url, wait_until="networkidle")
+                            await page.wait_for_timeout(3000)
+
+                            if self.provider_config.aliyun_captcha:
+                                captcha_check = await aliyun_captcha_check(page, self.account_name)
+                                if captcha_check:
+                                    await page.wait_for_timeout(3000)
+
+                            for cookie in await browser.cookies():
+                                cookie_name = cookie.get("name")
+                                cookie_value = cookie.get("value")
+                                if cookie_name in ["acw_tc", "cdn_sec_tc", "acw_sc__v2"] and cookie_value is not None:
+                                    waf_cookies[cookie_name] = cookie_value
+
+                            print(f"ℹ️ {self.account_name}: Got {len(waf_cookies)} WAF cookies after step 2")
+                        except Exception as e:
+                            print(f"⚠️ {self.account_name}: Step 2 failed to trigger WAF challenge: {e}")
+
                     # 检查是否至少获取到一个 WAF cookie
                     if not waf_cookies:
                         print(f"❌ {self.account_name}: No WAF cookies obtained")
                         return None
+
+                    # 记下浏览器真实 UA。阿里云 WAF 会把 acw_sc__v2 与 UA 绑定，
+                    # 后续 curl_cffi 请求必须复用同一个 UA，否则 cookie 会被判无效。
+                    try:
+                        self.waf_browser_user_agent = await page.evaluate("() => navigator.userAgent")
+                    except Exception as e:
+                        print(f"⚠️ {self.account_name}: Unable to read browser UA: {e}")
 
                     # 显示获取到的 cookies
                     cookie_names = list(waf_cookies.keys())
@@ -1836,6 +1869,7 @@ class CheckIn:
 
         bypass_cookies = {}
         browser_headers = None  # 浏览器指纹头部信息
+        self.waf_browser_user_agent = None  # 取 WAF cookies 时浏览器的真实 UA
         
         if self.provider_config.needs_waf_cookies():
             waf_cookies = await self.get_waf_cookies_with_browser()
@@ -1904,8 +1938,10 @@ class CheckIn:
             else:
                 print(f"ℹ️ {self.account_name}: Using browser fingerprint headers (Firefox, no Client Hints)")
         else:
-            # 没有浏览器指纹，生成一次随机 User-Agent 并在整个流程中使用
-            random_ua = get_random_user_agent()
+            # 没有 Cloudflare 指纹时，优先复用取 WAF cookies 那个浏览器的 UA
+            # （阿里云 WAF 把 acw_sc__v2 与 UA 绑定，换 UA 会让 cookie 失效），
+            # 没有则退回随机 UA，整个流程只生成一次
+            random_ua = self.waf_browser_user_agent or get_random_user_agent()
             common_headers = {
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "en,en-US;q=0.9,zh;q=0.8,en-CN;q=0.7,zh-CN;q=0.6",
@@ -1916,7 +1952,8 @@ class CheckIn:
                 "sec-fetch-mode": "cors",
                 "sec-fetch-site": "same-origin",
             }
-            print(f"ℹ️ {self.account_name}: Using random User-Agent (generated once)")
+            ua_source = "WAF browser" if self.waf_browser_user_agent else "random"
+            print(f"ℹ️ {self.account_name}: Using {ua_source} User-Agent (generated once)")
 
         # 解析账号配置
         cookies_data = self.account_config.cookies
