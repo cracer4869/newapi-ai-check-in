@@ -274,25 +274,41 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
 
         if captcha_hit:
             print(f"⚠️ {account_name}: Aliyun captcha detected ({captcha_hit})")
-            await dump_captcha_dom(page, account_name)
             try:
-                # 新版 Captcha 2.0 把滑块渲染在 iframe 内，主 DOM 上找不到，
-                # 所以逐个 frame 找；旧版 nocaptcha 在主 DOM 的 #nocaptcha 下。
-                # bounding_box 由 Playwright 换算成主页面坐标，可直接用于鼠标操作。
+                # 新版 Captcha 2.0 的滑块用 id 挂在主 DOM 上（#aliyunCaptcha-sliding-*），
+                # 不是旧版 nocaptcha 的 .nc_scale/.btn_slide 类名，两套都试。
+                # 仍然逐 frame 找，以防某些站点用 popup 模式渲染进 iframe；
+                # bounding_box 由 Playwright 换算成主页面坐标，鼠标操作不用改。
+                track_selectors = ("#aliyunCaptcha-sliding-wrapper", "#aliyunCaptcha-sliding-body", ".nc_scale")
+                handle_selectors = ("#aliyunCaptcha-sliding-slider", ".btn_slide")
+
                 slider = None
                 handle = None
 
                 for _ in range(10):
                     for frame in page.frames:
                         try:
-                            scale_el = await frame.query_selector(".nc_scale")
-                            slide_el = await frame.query_selector(".btn_slide")
-                            if scale_el and slide_el:
-                                slider = await scale_el.bounding_box()
-                                handle = await slide_el.bounding_box()
-                                if slider and handle:
-                                    print(f"ℹ️ {account_name}: Slider found in frame: {frame.url[:100]}")
+                            track_el = None
+                            for selector in track_selectors:
+                                track_el = await frame.query_selector(selector)
+                                if track_el:
                                     break
+                            if not track_el:
+                                continue
+
+                            handle_el = None
+                            for selector in handle_selectors:
+                                handle_el = await frame.query_selector(selector)
+                                if handle_el:
+                                    break
+                            if not handle_el:
+                                continue
+
+                            slider = await track_el.bounding_box()
+                            handle = await handle_el.bounding_box()
+                            if slider and handle:
+                                print(f"ℹ️ {account_name}: Slider found in frame: {frame.url[:100]}")
+                                break
                         except Exception:
                             continue
                     if slider and handle:
@@ -329,6 +345,8 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
                     return True
                 else:
                     print(f"❌ {account_name}: Slider or handle not found")
+                    # 轮询结束后再落盘，此时 SDK 已渲染完，DOM 才反映真实结构
+                    await dump_captcha_dom(page, account_name)
                     await take_screenshot(page, "aliyun_captcha_error", account_name)
                     return False
             except Exception as e:
