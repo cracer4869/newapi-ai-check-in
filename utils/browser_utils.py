@@ -198,6 +198,43 @@ async def save_page_content_to_file(
         print(f"⚠️ {account_name}: Failed to save HTML: {e}")
 
 
+async def dump_captcha_dom(page, account_name: str, logs_dir: str = "logs") -> None:
+    """把验证码页渲染后的 DOM（含所有 iframe）落盘
+
+    验证码厂商改版时，靠日志只能看到"没找到滑块"，看不出结构变成了什么样。
+    DEBUG=true 时把每个 frame 的 HTML 存下来，随 artifact 上传，便于定位。
+
+    Args:
+        page: Camoufox/Playwright 页面对象
+        account_name: 账号名称（用于日志输出和文件名）
+        logs_dir: 保存目录，默认为 "logs"
+    """
+    if os.getenv("DEBUG", "false").lower() not in ("true", "1", "yes"):
+        return
+
+    try:
+        os.makedirs(logs_dir, exist_ok=True)
+        safe_account_name = "".join(c if c.isalnum() else "_" for c in account_name)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filepath = os.path.join(logs_dir, f"{safe_account_name}_{timestamp}_captcha_dom.html")
+
+        frames = page.frames
+        parts = [f"<!-- page url: {page.url} | frames: {len(frames)} -->"]
+        for idx, frame in enumerate(frames):
+            try:
+                content = await frame.content()
+            except Exception as e:
+                content = f"<!-- frame content unavailable: {e} -->"
+            parts.append(f"\n\n<!-- ===== frame[{idx}] url={frame.url} ===== -->\n{content}")
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("".join(parts))
+
+        print(f"ℹ️ {account_name}: Captcha DOM dumped to {filepath} ({len(frames)} frame(s))")
+    except Exception as e:
+        print(f"⚠️ {account_name}: Unable to dump captcha DOM: {e}")
+
+
 async def aliyun_captcha_check(page, account_name: str) -> bool:
     """阿里云验证码检查和处理
 
@@ -237,22 +274,34 @@ async def aliyun_captcha_check(page, account_name: str) -> bool:
 
         if captcha_hit:
             print(f"⚠️ {account_name}: Aliyun captcha detected ({captcha_hit})")
+            await dump_captcha_dom(page, account_name)
             try:
-                # 新旧两版都沿用 nc_scale / btn_slide 类名，只是父容器不同
-                # （新版 #captcha-element，旧版 #nocaptcha），所以不限定父级
-                await page.wait_for_selector(".nc_scale, #nocaptcha", timeout=60000)
-
+                # 新版 Captcha 2.0 把滑块渲染在 iframe 内，主 DOM 上找不到，
+                # 所以逐个 frame 找；旧版 nocaptcha 在主 DOM 的 #nocaptcha 下。
+                # bounding_box 由 Playwright 换算成主页面坐标，可直接用于鼠标操作。
                 slider = None
                 handle = None
 
-                slider_element = await page.query_selector(".nc_scale")
-                if slider_element:
-                    slider = await slider_element.bounding_box()
-                    print(f"ℹ️ {account_name}: Slider bounding box: {slider}")
+                for _ in range(10):
+                    for frame in page.frames:
+                        try:
+                            scale_el = await frame.query_selector(".nc_scale")
+                            slide_el = await frame.query_selector(".btn_slide")
+                            if scale_el and slide_el:
+                                slider = await scale_el.bounding_box()
+                                handle = await slide_el.bounding_box()
+                                if slider and handle:
+                                    print(f"ℹ️ {account_name}: Slider found in frame: {frame.url[:100]}")
+                                    break
+                        except Exception:
+                            continue
+                    if slider and handle:
+                        break
+                    await page.wait_for_timeout(2000)
 
-                slider_handle = await page.query_selector(".btn_slide")
-                if slider_handle:
-                    handle = await slider_handle.bounding_box()
+                if slider:
+                    print(f"ℹ️ {account_name}: Slider bounding box: {slider}")
+                if handle:
                     print(f"ℹ️ {account_name}: Slider handle bounding box: {handle}")
 
                 if slider and handle:
